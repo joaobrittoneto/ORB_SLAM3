@@ -915,6 +915,11 @@ void System::ChangeDataset()
     mpTracker->NewDataset();
 }
 
+cv::Mat System::DrawCurrentFrame()
+{
+    return mpFrameDrawer->DrawFrame();
+}
+
 /*void System::SaveAtlas(int type){
     cout << endl << "Enter the name of the file if you want to save the current Atlas session. To exit press ENTER: ";
     string saveFileName;

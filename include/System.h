@@ -177,6 +177,8 @@ public:
 
     void ChangeDataset();
 
+    cv::Mat DrawCurrentFrame();
+
     //void SaveAtlas(int type);
 
 private:
