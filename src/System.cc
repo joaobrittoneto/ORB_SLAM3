@@ -350,6 +350,7 @@ cv::Mat System::TrackMonocular(const cv::Mat &im, const double &timestamp, const
         cerr << "ERROR: you called TrackMonocular but input sensor was not set to Monocular nor Monocular-Inertial." << endl;
         exit(-1);
     }
+    mImageSize = im.size();
 
     // Check mode change
     {
@@ -742,6 +743,120 @@ void System::SaveKeyFrameTrajectoryEuRoC(const string &filename)
             f << setprecision(6) << 1e9*pKF->mTimeStamp << " " <<  setprecision(9) << t.at<float>(0) << " " << t.at<float>(1) << " " << t.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
         }
     }
+    f.close();
+}
+
+void System::SaveKeyFrameTrajectoryBundler(const string &filename)
+{
+    cout << endl << "Saving keyframe trajectory to " << filename << " ..." << endl;
+
+    vector<Map*> vpMaps = mpAtlas->GetAllMaps();
+    Map* pBiggerMap;
+    int numMaxKFs = 0;
+    for(Map* pMap :vpMaps)
+    {
+        if(pMap->GetAllKeyFrames().size() > numMaxKFs)
+        {
+            numMaxKFs = pMap->GetAllKeyFrames().size();
+            pBiggerMap = pMap;
+        }
+    }
+
+    vector<KeyFrame*> vpKFs = pBiggerMap->GetAllKeyFrames();
+    sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
+
+    // Transform all keyframes so that the first keyframe is at the origin.
+    // After a loop closure the first keyframe might not be at the origin.
+    ofstream f, f_idx;
+    f.open(filename.c_str());
+    f_idx.open((filename+"_idx").c_str());
+    f << fixed;
+    f_idx << fixed;
+
+    f << "# Bundle file v0.3" << std::endl;
+    f << vpKFs.size() << " " << pBiggerMap->MapPointsInMap() << std::endl;
+
+    for(size_t i=0; i<vpKFs.size(); i++)
+    {
+        KeyFrame* pKF = vpKFs[i];
+        std::cout << "KF_idx " << i << ", KF_id " << pKF->mnId << std::endl;
+
+        if(pKF->isBad())
+            continue;
+
+        f << pKF->fx << " " << pKF->mDistCoef.at<float>(0) << " " << pKF->mDistCoef.at<float>(1) << std::endl;
+        f_idx << pKF->mnFrameId << std::endl;
+
+        if (mSensor == IMU_MONOCULAR || mSensor == IMU_STEREO)
+        {
+            cv::Mat R = pKF->GetImuRotation().t();
+            cv::Mat twb = pKF->GetImuPosition();
+            f << setprecision(6) << R.at<float>(0, 0) << " " << R.at<float>(0, 1) << " " << R.at<float>(0, 2) << std::endl;
+            f << setprecision(6) << R.at<float>(1, 0) << " " << R.at<float>(1, 1) << " " << R.at<float>(1, 2) << std::endl;
+            f << setprecision(6) << R.at<float>(2, 0) << " " << R.at<float>(2, 1) << " " << R.at<float>(2, 2) << std::endl;
+            f << setprecision(6) << twb.at<float>(0) << " " << twb.at<float>(1) << " " << twb.at<float>(2) << std::endl;
+
+        }
+        else
+        {
+            cv::Mat R = pKF->GetRotation();
+            cv::Mat t = pKF->GetCameraCenter();
+            f << setprecision(6) << R.at<float>(0, 0) << " " << R.at<float>(0, 1) << " " << R.at<float>(0, 2) << std::endl;
+            f << setprecision(6) << R.at<float>(1, 0) << " " << R.at<float>(1, 1) << " " << R.at<float>(1, 2) << std::endl;
+            f << setprecision(6) << R.at<float>(2, 0) << " " << R.at<float>(2, 1) << " " << R.at<float>(2, 2) << std::endl;
+            f << setprecision(6) << t.at<float>(0) << " " << t.at<float>(1) << " " << t.at<float>(2) << std::endl;
+        }
+    }
+
+    vector<MapPoint*> vpMPs = pBiggerMap->GetAllMapPoints();
+    if(vpMPs.size() != pBiggerMap->MapPointsInMap())
+        throw std::runtime_error("Inconsistent number of MapPoints in Map");
+
+    for(size_t i=0; i<vpMPs.size(); i++)
+    {
+        MapPoint* pMP = vpMPs[i];
+        cv::Mat p3Dw = pMP->GetWorldPos();
+
+        // TODO check reference coordinates
+        f << p3Dw.at<float>(0) << " " << p3Dw.at<float>(1) << " " << p3Dw.at<float>(2) << std::endl;
+        // Color 
+        f << 255 << " " << 255 << " " << 255 << std::endl;
+
+        std::map<KeyFrame*, std::tuple<int,int>> oMP = pMP->GetObservations();
+        if(oMP.empty())
+            throw std::runtime_error("MapPoint has no observation");
+
+        // Observations
+        f << oMP.size();
+        for(auto it = oMP.begin(); it != oMP.end(); it++)
+        {
+            auto kf = it->first;
+
+            // Find MapPoint in KeyFrame
+            auto mps = kf->GetMapPoints();
+            auto kf_in_vec = std::find(vpKFs.begin(),vpKFs.end(),kf);
+            auto mp_in_vec = std::find(mps.begin(), mps.end(), pMP);
+
+            auto kp_idx = get<0>(it->second); 
+
+            if(kp_idx >= kf->mvKeys.size())
+            {
+                std::cout << "KF: MP_id " << pMP->mnId << ", MPs matchs: " << kf->GetMapPointMatches().size() << ", kp: " << kf->mvKeys.size() << " Tuple: " << get<0>(it->second)<<","<<get<1>(it->second) << std::endl;
+                throw std::runtime_error("KeyFrame has not the same amount of MapPoints and KeyPoints");
+            }
+
+            auto kf_idx = std::distance(vpKFs.begin(), kf_in_vec);
+            auto mp_idx = std::distance(mps.begin(), mp_in_vec);
+            auto kp = kf->mvKeys[kp_idx];
+
+            // quadruplet
+            f << " " <<  kf_idx << " " << mp_idx << " " << (kp.pt.x - mImageSize.width/2) << " " << (mImageSize.height/2 - kp.pt.y);
+        }
+        f << std::endl;
+
+    }
+
+
     f.close();
 }
 

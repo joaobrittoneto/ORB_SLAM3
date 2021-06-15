@@ -151,6 +151,8 @@ public:
     void SaveTrajectoryEuRoC(const string &filename);
     void SaveKeyFrameTrajectoryEuRoC(const string &filename);
 
+    void SaveKeyFrameTrajectoryBundler(const string &filename);
+
     // Save data used for initialization debug
     void SaveDebugData(const int &iniIdx);
 
@@ -179,6 +181,8 @@ public:
     void ChangeDataset();
 
     cv::Mat DrawCurrentFrame();
+
+    cv::Size mImageSize;
 
     //void SaveAtlas(int type);
 
