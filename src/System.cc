@@ -1,4 +1,4 @@
-/**
+/*
 * This file is part of ORB-SLAM3
 *
 * Copyright (C) 2017-2020 Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
@@ -779,18 +779,28 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
     for(size_t i=0; i<vpKFs.size(); i++)
     {
         KeyFrame* pKF = vpKFs[i];
-        std::cout << "KF_idx " << i << ", KF_id " << pKF->mnId << std::endl;
+        std::cout << "KF_idx " << i << ", KF_id " << pKF->mnId  << ", Frame_id " << pKF->mnFrameId << std::endl;
 
         if(pKF->isBad())
             continue;
 
         f << pKF->fx << " " << pKF->mDistCoef.at<float>(0) << " " << pKF->mDistCoef.at<float>(1) << std::endl;
-        f_idx << pKF->mnFrameId << std::endl;
+        if(!pKF->mNameFile.empty())
+            f_idx << pKF->mNameFile << std::endl;
+        else
+            f_idx << pKF->mnFrameId << std::endl;
 
         if (mSensor == IMU_MONOCULAR || mSensor == IMU_STEREO)
         {
             cv::Mat R = pKF->GetImuRotation().t();
             cv::Mat twb = pKF->GetImuPosition();
+
+            cv::Mat rot;
+            cv::Rodrigues(R,rot);                 // angle-axis representation
+            rot.at<float>(0) = -rot.at<float>(0); // invert x
+            cv::Rodrigues(rot,R);                 // back to matrix
+            twb.at<float>(1) = -twb.at<float>(1); // invert y
+            twb.at<float>(2) = -twb.at<float>(2); // invert x
             f << setprecision(6) << R.at<float>(0, 0) << " " << R.at<float>(0, 1) << " " << R.at<float>(0, 2) << std::endl;
             f << setprecision(6) << R.at<float>(1, 0) << " " << R.at<float>(1, 1) << " " << R.at<float>(1, 2) << std::endl;
             f << setprecision(6) << R.at<float>(2, 0) << " " << R.at<float>(2, 1) << " " << R.at<float>(2, 2) << std::endl;
@@ -801,6 +811,17 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
         {
             cv::Mat R = pKF->GetRotation();
             cv::Mat t = pKF->GetCameraCenter();
+
+            std::cout << "R ori: " << R << std::endl;
+            cv::Mat rot;
+            cv::Rodrigues(R,rot);                 // angle-axis representation
+            rot.at<float>(0) = -rot.at<float>(0); // invert x
+            cv::Rodrigues(rot,R);                 // back to matrix
+            std::cout << "R new: " << R << std::endl;
+            std::cout << "t ori: " << t << std::endl;
+            t.at<float>(1) = -t.at<float>(1); // invert y
+            t.at<float>(2) = -t.at<float>(2); // invert x
+            std::cout << "t new: " << t << std::endl << std::endl;
             f << setprecision(6) << R.at<float>(0, 0) << " " << R.at<float>(0, 1) << " " << R.at<float>(0, 2) << std::endl;
             f << setprecision(6) << R.at<float>(1, 0) << " " << R.at<float>(1, 1) << " " << R.at<float>(1, 2) << std::endl;
             f << setprecision(6) << R.at<float>(2, 0) << " " << R.at<float>(2, 1) << " " << R.at<float>(2, 2) << std::endl;
@@ -818,7 +839,7 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
         cv::Mat p3Dw = pMP->GetWorldPos();
 
         // TODO check reference coordinates
-        f << p3Dw.at<float>(0) << " " << p3Dw.at<float>(1) << " " << p3Dw.at<float>(2) << std::endl;
+        f << p3Dw.at<float>(0) << " " << -p3Dw.at<float>(1) << " " << -p3Dw.at<float>(2) << std::endl;
         // Color 
         f << 255 << " " << 255 << " " << 255 << std::endl;
 
@@ -827,7 +848,27 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
             throw std::runtime_error("MapPoint has no observation");
 
         // Observations
-        f << oMP.size();
+//        f << oMP.size();
+        int matching_observation = 0;
+        for(auto it = oMP.begin(); it != oMP.end(); it++)
+        {
+            auto kf = it->first;
+
+            // Find MapPoint in KeyFrame
+            auto mps = kf->GetMapPointMatches();
+            auto kf_in_vec = std::find(vpKFs.begin(),vpKFs.end(),kf);
+            if (kf_in_vec == vpKFs.end())
+            {
+                continue;
+            }
+//            if(mps[get<0>(it->second)]->mnId != pMP->mnId)
+//            {
+//                std::cout << "MP not matching " << ", MP id in KF " << mps[get<0>(it->second)]->mnId  << ", MP id " << pMP->mnId << std::endl;
+//                throw std::runtime_error("MapPoint not matching in KeyFrame's MapPoints list");
+//            }
+            matching_observation++;
+        }
+        f << matching_observation;
         for(auto it = oMP.begin(); it != oMP.end(); it++)
         {
             auto kf = it->first;
@@ -835,7 +876,17 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
             // Find MapPoint in KeyFrame
             auto mps = kf->GetMapPoints();
             auto kf_in_vec = std::find(vpKFs.begin(),vpKFs.end(),kf);
-            auto mp_in_vec = std::find(mps.begin(), mps.end(), pMP);
+            if (kf_in_vec == vpKFs.end())
+            {
+                std::cout << "KF not present" << ", KF_id " << kf->mnId  << ", Frame_id " << kf->mnFrameId << std::endl;
+                continue;
+            }
+//            auto mp_in_vec = std::find(mps.begin(), mps.end(), pMP);
+//            if (mp_in_vec == mps.end())
+//            {
+//                std::cout << "MP not present" << ", MP_id " << pMP->mnId  << ", MP_idx " << get<0>(it->second) << std::endl;
+//                continue;
+//            }
 
             auto kp_idx = get<0>(it->second); 
 
@@ -846,7 +897,8 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
             }
 
             auto kf_idx = std::distance(vpKFs.begin(), kf_in_vec);
-            auto mp_idx = std::distance(mps.begin(), mp_in_vec);
+            //auto mp_idx = std::distance(mps.begin(), mp_in_vec);
+            auto mp_idx = kp_idx;
             auto kp = kf->mvKeys[kp_idx];
 
             // quadruplet
