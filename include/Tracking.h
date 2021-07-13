@@ -137,6 +137,7 @@ public:
     list<cv::Mat> mlRelativeFramePoses;
     list<KeyFrame*> mlpReferences;
     list<double> mlFrameTimes;
+    list<long unsigned int> mlFrameIds;
     list<bool> mlbLost;
 
     // frames with estimated pose

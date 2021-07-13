@@ -152,6 +152,7 @@ public:
     void SaveKeyFrameTrajectoryEuRoC(const string &filename);
 
     void SaveKeyFrameTrajectoryBundler(const string &filename);
+    void SaveTrajectoryBundler(const string &filename);
 
     // Save data used for initialization debug
     void SaveDebugData(const int &iniIdx);

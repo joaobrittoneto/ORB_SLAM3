@@ -1889,6 +1889,7 @@ void Tracking::Track()
             mlRelativeFramePoses.push_back(Tcr);
             mlpReferences.push_back(mCurrentFrame.mpReferenceKF);
             mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
+            mlFrameIds.push_back(mCurrentFrame.mnId);
             mlbLost.push_back(mState==LOST);
         }
         else
@@ -1897,6 +1898,7 @@ void Tracking::Track()
             mlRelativeFramePoses.push_back(mlRelativeFramePoses.back());
             mlpReferences.push_back(mlpReferences.back());
             mlFrameTimes.push_back(mlFrameTimes.back());
+            mlFrameIds.push_back(mCurrentFrame.mnId);
             mlbLost.push_back(mState==LOST);
         }
 
@@ -3395,6 +3397,7 @@ void Tracking::Reset(bool bLocMap)
     mlRelativeFramePoses.clear();
     mlpReferences.clear();
     mlFrameTimes.clear();
+    mlFrameIds.clear();
     mlbLost.clear();
     mCurrentFrame = Frame();
     mnLastRelocFrameId = 0;

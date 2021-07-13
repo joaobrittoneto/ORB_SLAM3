@@ -812,16 +812,12 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
             cv::Mat R = pKF->GetRotation();
             cv::Mat t = pKF->GetCameraCenter();
 
-            std::cout << "R ori: " << R << std::endl;
             cv::Mat rot;
             cv::Rodrigues(R,rot);                 // angle-axis representation
             rot.at<float>(0) = -rot.at<float>(0); // invert x
             cv::Rodrigues(rot,R);                 // back to matrix
-            std::cout << "R new: " << R << std::endl;
-            std::cout << "t ori: " << t << std::endl;
             t.at<float>(1) = -t.at<float>(1); // invert y
             t.at<float>(2) = -t.at<float>(2); // invert x
-            std::cout << "t new: " << t << std::endl << std::endl;
             f << setprecision(6) << R.at<float>(0, 0) << " " << R.at<float>(0, 1) << " " << R.at<float>(0, 2) << std::endl;
             f << setprecision(6) << R.at<float>(1, 0) << " " << R.at<float>(1, 1) << " " << R.at<float>(1, 2) << std::endl;
             f << setprecision(6) << R.at<float>(2, 0) << " " << R.at<float>(2, 1) << " " << R.at<float>(2, 2) << std::endl;
@@ -908,6 +904,132 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
 
     }
 
+
+    f.close();
+}
+
+void System::SaveTrajectoryBundler(const string &filename)
+{
+    cout << endl << "Saving trajectory to " << filename << " ..." << endl;
+
+    vector<Map*> vpMaps = mpAtlas->GetAllMaps();
+    Map* pBiggerMap;
+    int numMaxKFs = 0;
+    for(Map* pMap :vpMaps)
+    {
+        if(pMap->GetAllKeyFrames().size() > numMaxKFs)
+        {
+            numMaxKFs = pMap->GetAllKeyFrames().size();
+            pBiggerMap = pMap;
+        }
+    }
+
+    vector<KeyFrame*> vpKFs = pBiggerMap->GetAllKeyFrames();
+    sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
+
+    // Transform all keyframes so that the first keyframe is at the origin.
+    // After a loop closure the first keyframe might not be at the origin.
+    ofstream f, f_idx;
+    std::stringstream f_tmp;
+    long unsigned int number_frames = 0;
+    f.open(filename.c_str());
+    f_idx.open((filename+"_idx").c_str());
+    f << fixed;
+    f_idx << fixed;
+
+    f << "# Bundle file v0.3" << std::endl;
+
+    // Transform all keyframes so that the first keyframe is at the origin.
+    // After a loop closure the first keyframe might not be at the origin.
+    cv::Mat Twb; // Can be word to cam0 or world to b dependingo on IMU or not.
+    if (mSensor==IMU_MONOCULAR || mSensor==IMU_STEREO)
+        Twb = vpKFs[0]->GetImuPose();
+    else
+        Twb = vpKFs[0]->GetPoseInverse();
+
+    // Frame pose is stored relative to its reference keyframe (which is optimized by BA and pose graph).
+    // We need to get first the keyframe pose and then concatenate the relative transformation.
+    // Frames not localized (tracking failure) are not saved.
+
+    // For each frame we have a reference keyframe (lRit), the timestamp (lT) and a flag
+    // which is true when tracking failed (lbL).
+    list<ORB_SLAM3::KeyFrame*>::iterator lRit = mpTracker->mlpReferences.begin();
+    list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
+    list<long unsigned int>::iterator lFid = mpTracker->mlFrameIds.begin();
+    list<bool>::iterator lbL = mpTracker->mlbLost.begin();
+
+    for(list<cv::Mat>::iterator lit=mpTracker->mlRelativeFramePoses.begin(),
+        lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++, lFid++)
+    {
+        if(*lbL)
+            continue;
+
+        KeyFrame* pKF = *lRit;
+
+        cv::Mat Trw = cv::Mat::eye(4,4,CV_32F);
+
+        // If the reference keyframe was culled, traverse the spanning tree to get a suitable keyframe.
+        if (!pKF)
+            continue;
+
+        while(pKF->isBad())
+        {
+            Trw = Trw*pKF->mTcp;
+            pKF = pKF->GetParent();
+        }
+
+        if(!pKF || pKF->GetMap() != pBiggerMap)
+        {
+            continue;
+        }
+
+        f_tmp << pKF->fx << " " << pKF->mDistCoef.at<float>(0) << " " << pKF->mDistCoef.at<float>(1) << std::endl;
+
+        f_idx << *lFid << std::endl;
+        std::cout << "Final: Frame id: " << *lFid << ", KeyFrame id: " << pKF->mnFrameId << std::endl;
+
+        Trw = Trw*pKF->GetPose()*Twb; // Tcp*Tpw*Twb0=Tcb0 where b0 is the new world reference
+
+        number_frames++;
+
+        if (mSensor == IMU_MONOCULAR || mSensor == IMU_STEREO)
+        {
+            cv::Mat Tbw = pKF->mImuCalib.Tbc*(*lit)*Trw;
+            cv::Mat Rwb = Tbw.rowRange(0,3).colRange(0,3).t();
+            cv::Mat twb = -Rwb*Tbw.rowRange(0,3).col(3);
+
+            cv::Mat rot;
+            cv::Rodrigues(Rwb,rot);                 // angle-axis representation
+            rot.at<float>(0) = -rot.at<float>(0); // invert x
+            cv::Rodrigues(rot,Rwb);                 // back to matrix
+            twb.at<float>(1) = -twb.at<float>(1); // invert y
+            twb.at<float>(2) = -twb.at<float>(2); // invert x
+            f_tmp << setprecision(6) << Rwb.at<float>(0, 0) << " " << Rwb.at<float>(0, 1) << " " << Rwb.at<float>(0, 2) << std::endl;
+            f_tmp << setprecision(6) << Rwb.at<float>(1, 0) << " " << Rwb.at<float>(1, 1) << " " << Rwb.at<float>(1, 2) << std::endl;
+            f_tmp << setprecision(6) << Rwb.at<float>(2, 0) << " " << Rwb.at<float>(2, 1) << " " << Rwb.at<float>(2, 2) << std::endl;
+            f_tmp << setprecision(6) << twb.at<float>(0) << " " << twb.at<float>(1) << " " << twb.at<float>(2) << std::endl;
+        }
+        else
+        {
+            cv::Mat Tcw = (*lit)*Trw;
+            cv::Mat Rwc = Tcw.rowRange(0,3).colRange(0,3).t();
+            cv::Mat twc = -Rwc*Tcw.rowRange(0,3).col(3);
+
+            cv::Mat rot;
+            cv::Rodrigues(Rwc,rot);                 // angle-axis representation
+            rot.at<float>(0) = -rot.at<float>(0); // invert x
+            cv::Rodrigues(rot,Rwc);                 // back to matrix
+            twc.at<float>(1) = -twc.at<float>(1); // invert y
+            twc.at<float>(2) = -twc.at<float>(2); // invert x
+            f_tmp << setprecision(6) << Rwc.at<float>(0, 0) << " " << Rwc.at<float>(0, 1) << " " << Rwc.at<float>(0, 2) << std::endl;
+            f_tmp << setprecision(6) << Rwc.at<float>(1, 0) << " " << Rwc.at<float>(1, 1) << " " << Rwc.at<float>(1, 2) << std::endl;
+            f_tmp << setprecision(6) << Rwc.at<float>(2, 0) << " " << Rwc.at<float>(2, 1) << " " << Rwc.at<float>(2, 2) << std::endl;
+            f_tmp << setprecision(6) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << std::endl;
+        }
+    }
+
+    f << number_frames << " " << pBiggerMap->MapPointsInMap() << std::endl;
+    f << f_tmp.str();
 
     f.close();
 }
