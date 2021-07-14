@@ -403,6 +403,11 @@ cv::Mat System::TrackMonocular(const cv::Mat &im, const double &timestamp, const
     mTrackingState = mpTracker->mState;
     mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
     mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
+    mTrackedKeyPointsMap.insert(
+            std::make_pair( mpTracker->mCurrentFrame.mnId,
+                    std::make_pair( mpTracker->mCurrentFrame.mvKeys, mpTracker->mCurrentFrame.mvpMapPoints)));
+    std::cout << "mvKeys: " << mpTracker->mCurrentFrame.mvKeys.size() << 
+        " mvMapPoints: " << mpTracker->mCurrentFrame.mvpMapPoints.size() << std::endl;
 
     return Tcw;
 }
@@ -930,8 +935,10 @@ void System::SaveTrajectoryBundler(const string &filename)
     // Transform all keyframes so that the first keyframe is at the origin.
     // After a loop closure the first keyframe might not be at the origin.
     ofstream f, f_idx;
-    std::stringstream f_tmp;
+    std::stringstream f_tmp, f_tmp_orbs, f_tmp_orb;
     long unsigned int number_frames = 0;
+    long unsigned int number_orbs = 0;
+    
     f.open(filename.c_str());
     f_idx.open((filename+"_idx").c_str());
     f << fixed;
@@ -957,10 +964,12 @@ void System::SaveTrajectoryBundler(const string &filename)
     list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
     list<long unsigned int>::iterator lFid = mpTracker->mlFrameIds.begin();
     list<bool>::iterator lbL = mpTracker->mlbLost.begin();
+    list<cv::Mat> framePoses;
 
     for(list<cv::Mat>::iterator lit=mpTracker->mlRelativeFramePoses.begin(),
         lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++, lFid++)
     {
+        framePoses.push_back(cv::Mat::zeros(4,4,CV_32F));
         if(*lbL)
             continue;
 
@@ -988,49 +997,199 @@ void System::SaveTrajectoryBundler(const string &filename)
         f_idx << *lFid << std::endl;
         std::cout << "Final: Frame id: " << *lFid << ", KeyFrame id: " << pKF->mnFrameId << std::endl;
 
+        cv::Mat Torw = Trw*pKF->GetPose(); // keep original reference system
         Trw = Trw*pKF->GetPose()*Twb; // Tcp*Tpw*Twb0=Tcb0 where b0 is the new world reference
 
         number_frames++;
 
+        cv::Mat Tcw, Tow;
+        cv::Mat Rwc, Rwo;
+        cv::Mat twc, two;
+
         if (mSensor == IMU_MONOCULAR || mSensor == IMU_STEREO)
         {
-            cv::Mat Tbw = pKF->mImuCalib.Tbc*(*lit)*Trw;
-            cv::Mat Rwb = Tbw.rowRange(0,3).colRange(0,3).t();
-            cv::Mat twb = -Rwb*Tbw.rowRange(0,3).col(3);
+            Tcw = pKF->mImuCalib.Tbc*(*lit)*Trw;
+            Rwc = Tcw.rowRange(0,3).colRange(0,3).t();
+            twc = -Rwc*Tcw.rowRange(0,3).col(3);
 
-            cv::Mat rot;
-            cv::Rodrigues(Rwb,rot);                 // angle-axis representation
-            rot.at<float>(0) = -rot.at<float>(0); // invert x
-            cv::Rodrigues(rot,Rwb);                 // back to matrix
-            twb.at<float>(1) = -twb.at<float>(1); // invert y
-            twb.at<float>(2) = -twb.at<float>(2); // invert x
-            f_tmp << setprecision(6) << Rwb.at<float>(0, 0) << " " << Rwb.at<float>(0, 1) << " " << Rwb.at<float>(0, 2) << std::endl;
-            f_tmp << setprecision(6) << Rwb.at<float>(1, 0) << " " << Rwb.at<float>(1, 1) << " " << Rwb.at<float>(1, 2) << std::endl;
-            f_tmp << setprecision(6) << Rwb.at<float>(2, 0) << " " << Rwb.at<float>(2, 1) << " " << Rwb.at<float>(2, 2) << std::endl;
-            f_tmp << setprecision(6) << twb.at<float>(0) << " " << twb.at<float>(1) << " " << twb.at<float>(2) << std::endl;
+            Tow = pKF->mImuCalib.Tbc*(*lit)*Torw;
+            Rwo = Tow.rowRange(0,3).colRange(0,3).t();
+            two = -Rwo*Tow.rowRange(0,3).col(3);
         }
         else
         {
-            cv::Mat Tcw = (*lit)*Trw;
-            cv::Mat Rwc = Tcw.rowRange(0,3).colRange(0,3).t();
-            cv::Mat twc = -Rwc*Tcw.rowRange(0,3).col(3);
+            Tcw = (*lit)*Trw;
+            Rwc = Tcw.rowRange(0,3).colRange(0,3).t();
+            twc = -Rwc*Tcw.rowRange(0,3).col(3);
 
-            cv::Mat rot;
-            cv::Rodrigues(Rwc,rot);                 // angle-axis representation
-            rot.at<float>(0) = -rot.at<float>(0); // invert x
-            cv::Rodrigues(rot,Rwc);                 // back to matrix
-            twc.at<float>(1) = -twc.at<float>(1); // invert y
-            twc.at<float>(2) = -twc.at<float>(2); // invert x
-            f_tmp << setprecision(6) << Rwc.at<float>(0, 0) << " " << Rwc.at<float>(0, 1) << " " << Rwc.at<float>(0, 2) << std::endl;
-            f_tmp << setprecision(6) << Rwc.at<float>(1, 0) << " " << Rwc.at<float>(1, 1) << " " << Rwc.at<float>(1, 2) << std::endl;
-            f_tmp << setprecision(6) << Rwc.at<float>(2, 0) << " " << Rwc.at<float>(2, 1) << " " << Rwc.at<float>(2, 2) << std::endl;
-            f_tmp << setprecision(6) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << std::endl;
+            Tow = (*lit)*Torw;
+            Rwo = Tow.rowRange(0,3).colRange(0,3).t();
+            two = -Rwo*Tow.rowRange(0,3).col(3);
         }
+
+        framePoses.back() = Tow;
+
+        cv::Mat rot;
+        cv::Rodrigues(Rwc,rot);                 // angle-axis representation
+        rot.at<float>(0) = -rot.at<float>(0); // invert x
+        cv::Rodrigues(rot,Rwc);                 // back to matrix
+        twc.at<float>(1) = -twc.at<float>(1); // invert y
+        twc.at<float>(2) = -twc.at<float>(2); // invert x
+        f_tmp << setprecision(6) << Rwc.at<float>(0, 0) << " " << Rwc.at<float>(0, 1) << " " << Rwc.at<float>(0, 2) << std::endl;
+        f_tmp << setprecision(6) << Rwc.at<float>(1, 0) << " " << Rwc.at<float>(1, 1) << " " << Rwc.at<float>(1, 2) << std::endl;
+        f_tmp << setprecision(6) << Rwc.at<float>(2, 0) << " " << Rwc.at<float>(2, 1) << " " << Rwc.at<float>(2, 2) << std::endl;
+        f_tmp << setprecision(6) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << std::endl;
     }
 
-    f << number_frames << " " << pBiggerMap->MapPointsInMap() << std::endl;
-    f << f_tmp.str();
 
+    vector<MapPoint*> vpMPs = pBiggerMap->GetAllMapPoints();
+    if(vpMPs.size() != pBiggerMap->MapPointsInMap())
+        throw std::runtime_error("Inconsistent number of MapPoints in Map");
+
+    if(number_frames != framePoses.size())
+        throw std::runtime_error("Inconsistent number of frames");
+
+    std::vector<int> key_idxs(number_frames, 0);
+    cv::Mat p3Dw;
+    for(size_t i=0; i<vpMPs.size(); i++)
+    {
+        MapPoint* pMP = vpMPs[i];
+        // use first KeyFrame as reference
+        //cv::Mat p3Dw = pMP->GetWorldPos()*Twb;
+        p3Dw = pMP->GetWorldPos();
+        f_tmp_orb.str(std::string());
+
+
+        // Get map of frameId and KeyFrame
+        std::map<KeyFrame*, std::tuple<int,int>> oMP = pMP->GetObservations();
+        std::map<unsigned long int, KeyFrame*> keyFrameIdMap;
+        if(oMP.empty())
+            throw std::runtime_error("MapPoint has no observation");
+        for(auto it = oMP.begin(); it != oMP.end(); it++)
+        {
+            keyFrameIdMap.insert(std::pair<unsigned long int, KeyFrame*>(it->first->mnFrameId, it->first));
+        }
+
+        // Observations
+        lFid = mpTracker->mlFrameIds.begin();
+
+        int matching_observation = 0;
+        int cam_idx = 0;
+
+        for(list<cv::Mat>::iterator lit=framePoses.begin(),
+            lend=framePoses.end();lit!=lend;lit++, lFid++, cam_idx++)
+        {
+            // Pose was not set
+            if(!cv::norm((*lit), cv::Mat::zeros(4,4,CV_32F), cv::NORM_L1))
+                continue;
+
+            auto kp = pMP->isInFrustum(*lit);
+            if(kp.x == -1 || kp.y == -1)
+                continue;
+
+            auto kf_map = keyFrameIdMap.find(*lFid);
+            if( kf_map != keyFrameIdMap.end())
+            {
+                auto kf = kf_map->second;
+                auto kp_idx = get<0>(oMP.find(kf)->second);
+                auto kp_2 = kf->mvKeys[kp_idx].pt;
+                auto kp_3 = pMP->isInFrustum(kf->GetPose());
+                auto kp_4 = pMP->isInFrustum(kf->GetPoseInverse());
+                std::cout << "KeyFrameId: " << *lFid <<
+                    "; real pt: " << kp_2.x << ", " << kp_2.y <<
+                    "; proj pt: " << kp.x << ", " << kp.y <<
+                    "; proj 3 pt: " << kp_3.x << ", " << kp_3.y <<
+                    "; proj 4 pt: " << kp_4.x << ", " << kp_4.y << std::endl;
+                std::cout << "KF pose: " << std::endl << kf->GetPose() <<std::endl << " KF inv pose: "<< std::endl << kf->GetPoseInverse()<< std::endl << ", Comp pose: "<< std::endl << *lit << std::endl;
+                std::cout << "KF Translation: " << std::endl << kf->GetTranslation() <<std::endl << " KF cam center: "<< std::endl << kf->GetCameraCenter()<< std::endl;
+            }
+
+
+            // quadruplet
+            f_tmp_orb << " " << cam_idx  << " " << key_idxs[cam_idx] << " " << (kp.x - mImageSize.width/2) << " " << (mImageSize.height/2 - kp.y);
+
+            matching_observation++;
+            key_idxs[cam_idx] = key_idxs[cam_idx]+1;
+        }
+        if(matching_observation == 0)
+            std::cout << "NO OBSERVATIONS" << std::endl;
+        else
+        {
+            number_orbs++;
+
+            // TODO check reference coordinates
+            f_tmp_orbs << p3Dw.at<float>(0) << " " << -p3Dw.at<float>(1) << " " << -p3Dw.at<float>(2) << std::endl;
+            // Color 
+            f_tmp_orbs << 255 << " " << 255 << " " << 255 << std::endl;
+            f_tmp_orbs << matching_observation;
+            f_tmp_orbs << f_tmp_orb.str();
+            f_tmp_orbs << std::endl;
+        }
+
+
+//        // Observations
+//        int matching_observation = 0;
+//        for(auto it = oMP.begin(); it != oMP.end(); it++)
+//        {
+//            auto kf = it->first;
+//
+//            // Find MapPoint in KeyFrame
+//            auto mps = kf->GetMapPointMatches();
+//            auto kf_in_vec = std::find(vpKFs.begin(),vpKFs.end(),kf);
+//            if (kf_in_vec == vpKFs.end())
+//            {
+//                continue;
+//            }
+////            if(mps[get<0>(it->second)]->mnId != pMP->mnId)
+////            {
+////                std::cout << "MP not matching " << ", MP id in KF " << mps[get<0>(it->second)]->mnId  << ", MP id " << pMP->mnId << std::endl;
+////                throw std::runtime_error("MapPoint not matching in KeyFrame's MapPoints list");
+////            }
+//            matching_observation++;
+//        }
+//        f << matching_observation;
+//        for(auto it = oMP.begin(); it != oMP.end(); it++)
+//        {
+//            auto kf = it->first;
+//
+//            // Find MapPoint in KeyFrame
+//            auto mps = kf->GetMapPoints();
+//            auto kf_in_vec = std::find(vpKFs.begin(),vpKFs.end(),kf);
+//            if (kf_in_vec == vpKFs.end())
+//            {
+//                std::cout << "KF not present" << ", KF_id " << kf->mnId  << ", Frame_id " << kf->mnFrameId << std::endl;
+//                continue;
+//            }
+////            auto mp_in_vec = std::find(mps.begin(), mps.end(), pMP);
+////            if (mp_in_vec == mps.end())
+////            {
+////                std::cout << "MP not present" << ", MP_id " << pMP->mnId  << ", MP_idx " << get<0>(it->second) << std::endl;
+////                continue;
+////            }
+//
+//            auto kp_idx = get<0>(it->second); 
+//
+//            if(kp_idx >= kf->mvKeys.size())
+//            {
+//                std::cout << "KF: MP_id " << pMP->mnId << ", MPs matchs: " << kf->GetMapPointMatches().size() << ", kp: " << kf->mvKeys.size() << " Tuple: " << get<0>(it->second)<<","<<get<1>(it->second) << std::endl;
+//                throw std::runtime_error("KeyFrame has not the same amount of MapPoints and KeyPoints");
+//            }
+//
+//            auto kf_idx = std::distance(vpKFs.begin(), kf_in_vec);
+//            //auto mp_idx = std::distance(mps.begin(), mp_in_vec);
+//            auto mp_idx = kp_idx;
+//            auto kp = kf->mvKeys[kp_idx];
+//
+//            // quadruplet
+//            f << " " <<  kf_idx << " " << mp_idx << " " << (kp.pt.x - mImageSize.width/2) << " " << (mImageSize.height/2 - kp.pt.y);
+//        }
+//        f << std::endl;
+//
+    }
+
+    f << number_frames << " " << number_orbs << std::endl;
+    f << f_tmp.str();
+    f << f_tmp_orbs.str();
     f.close();
 }
 

@@ -245,6 +245,8 @@ private:
     std::vector<MapPoint*> mTrackedMapPoints;
     std::vector<cv::KeyPoint> mTrackedKeyPointsUn;
     std::mutex mMutexState;
+    std::map<unsigned long int,
+        std::pair<std::vector<cv::KeyPoint>, std::vector<MapPoint*>>> mTrackedKeyPointsMap;
 };
 
 }// namespace ORB_SLAM

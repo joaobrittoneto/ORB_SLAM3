@@ -631,4 +631,56 @@ void MapPoint::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsi
     mBackupObservationsId2.clear();
 }
 
+cv::Point2f MapPoint::isInFrustum(const cv::Mat &T, float viewingCosLimit)
+{
+    cv::Mat R = T.rowRange(0,3).colRange(0,3);
+    cv::Mat t = T.rowRange(0,3).col(3);
+    return this->isInFrustum(R, t, viewingCosLimit);
+}
+
+cv::Point2f MapPoint::isInFrustum(const cv::Mat &R, const cv::Mat &t, float viewingCosLimit)
+{
+    cv::Point2f invalid(-1.0f,-1.0f);
+
+    // 3D in absolute coordinates
+    cv::Mat P = this->GetWorldPos();
+
+    // 3D in camera coordinates
+    const cv::Mat Pc = R*P + t;
+    const float Pc_dist = cv::norm(Pc);
+
+    // Check positive depth
+    const float &PcZ = Pc.at<float>(2);
+    const float invz = 1.0f/PcZ;
+    if(PcZ<0.0f)
+        return invalid;
+
+    auto rKF = this->GetReferenceKeyFrame();
+    cv::Point2f uv = rKF->mpCamera->project(Pc);
+
+    //std::cout << "Img size: x: [" << rKF->mnMinX << "," <<rKF->mnMaxX << "], y:[" << rKF->mnMinY << "," << rKF->mnMaxY << "; kp: " << uv.x << "," << uv.y << std::endl; 
+    if(uv.x< 0.0f || uv.x > rKF->mnMaxX )
+        return invalid;
+    if(uv.y< 0.0f || uv.y > rKF->mnMaxY )
+        return invalid;
+
+    // Check distance is in the scale invariance region of the MapPoint
+    const float maxDistance = this->GetMaxDistanceInvariance();
+    const float minDistance = this->GetMinDistanceInvariance();
+    const cv::Mat PO = P-t; // TODO Check transformation
+    const float dist = cv::norm(PO);
+
+    if(dist<minDistance || dist>maxDistance)
+        return invalid;
+
+    // Check viewing angle
+    cv::Mat Pn = this->GetNormal();
+    const float viewCos = PO.dot(Pn)/dist;
+
+    if(viewCos<viewingCosLimit)
+        return invalid;
+
+    return uv;
+}
+
 } //namespace ORB_SLAM
