@@ -247,6 +247,7 @@ private:
     std::mutex mMutexState;
     std::map<unsigned long int,
         std::pair<std::vector<cv::KeyPoint>, std::vector<MapPoint*>>> mTrackedKeyPointsMap;
+    std::vector<cv::Mat> mTrackedFramePoses;
 };
 
 }// namespace ORB_SLAM

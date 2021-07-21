@@ -403,11 +403,13 @@ cv::Mat System::TrackMonocular(const cv::Mat &im, const double &timestamp, const
     mTrackingState = mpTracker->mState;
     mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
     mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
-    mTrackedKeyPointsMap.insert(
-            std::make_pair( mpTracker->mCurrentFrame.mnId,
-                    std::make_pair( mpTracker->mCurrentFrame.mvKeys, mpTracker->mCurrentFrame.mvpMapPoints)));
-    std::cout << "mvKeys: " << mpTracker->mCurrentFrame.mvKeys.size() << 
-        " mvMapPoints: " << mpTracker->mCurrentFrame.mvpMapPoints.size() << std::endl;
+    if (!(Tcw.rows == 0 || Tcw.cols == 0))
+    {
+        mTrackedKeyPointsMap.insert(
+                std::make_pair( mpTracker->mCurrentFrame.mnId,
+                        std::make_pair( mpTracker->mCurrentFrame.mvKeys, mpTracker->mCurrentFrame.mvpMapPoints)));
+        mTrackedFramePoses.push_back(Tcw.clone());
+    }
 
     return Tcw;
 }
@@ -797,6 +799,7 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
 
         if (mSensor == IMU_MONOCULAR || mSensor == IMU_STEREO)
         {
+            // TODO Check reference frame
             cv::Mat R = pKF->GetImuRotation().t();
             cv::Mat twb = pKF->GetImuPosition();
 
@@ -804,6 +807,7 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
             cv::Rodrigues(R,rot);                 // angle-axis representation
             rot.at<float>(0) = -rot.at<float>(0); // invert x
             cv::Rodrigues(rot,R);                 // back to matrix
+
             twb.at<float>(1) = -twb.at<float>(1); // invert y
             twb.at<float>(2) = -twb.at<float>(2); // invert x
             f << setprecision(6) << R.at<float>(0, 0) << " " << R.at<float>(0, 1) << " " << R.at<float>(0, 2) << std::endl;
@@ -814,8 +818,8 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
         }
         else
         {
-            cv::Mat R = pKF->GetRotation();
-            cv::Mat t = pKF->GetCameraCenter();
+            cv::Mat R = pKF->GetRotation().t(); // Rwc
+            cv::Mat t = pKF->GetTranslation(); // tcw
 
             cv::Mat rot;
             cv::Rodrigues(R,rot);                 // angle-axis representation
@@ -823,6 +827,7 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
             cv::Rodrigues(rot,R);                 // back to matrix
             t.at<float>(1) = -t.at<float>(1); // invert y
             t.at<float>(2) = -t.at<float>(2); // invert x
+
             f << setprecision(6) << R.at<float>(0, 0) << " " << R.at<float>(0, 1) << " " << R.at<float>(0, 2) << std::endl;
             f << setprecision(6) << R.at<float>(1, 0) << " " << R.at<float>(1, 1) << " " << R.at<float>(1, 2) << std::endl;
             f << setprecision(6) << R.at<float>(2, 0) << " " << R.at<float>(2, 1) << " " << R.at<float>(2, 2) << std::endl;
@@ -841,7 +846,7 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
 
         // TODO check reference coordinates
         f << p3Dw.at<float>(0) << " " << -p3Dw.at<float>(1) << " " << -p3Dw.at<float>(2) << std::endl;
-        // Color 
+        // Color
         f << 255 << " " << 255 << " " << 255 << std::endl;
 
         std::map<KeyFrame*, std::tuple<int,int>> oMP = pMP->GetObservations();
@@ -889,7 +894,7 @@ void System::SaveKeyFrameTrajectoryBundler(const string &filename)
 //                continue;
 //            }
 
-            auto kp_idx = get<0>(it->second); 
+            auto kp_idx = get<0>(it->second);
 
             if(kp_idx >= kf->mvKeys.size())
             {
@@ -938,7 +943,7 @@ void System::SaveTrajectoryBundler(const string &filename)
     std::stringstream f_tmp, f_tmp_orbs, f_tmp_orb;
     long unsigned int number_frames = 0;
     long unsigned int number_orbs = 0;
-    
+
     f.open(filename.c_str());
     f_idx.open((filename+"_idx").c_str());
     f << fixed;
@@ -964,12 +969,11 @@ void System::SaveTrajectoryBundler(const string &filename)
     list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
     list<long unsigned int>::iterator lFid = mpTracker->mlFrameIds.begin();
     list<bool>::iterator lbL = mpTracker->mlbLost.begin();
-    list<cv::Mat> framePoses;
+    std::vector<cv::Mat>::iterator lTf = mTrackedFramePoses.begin();
 
     for(list<cv::Mat>::iterator lit=mpTracker->mlRelativeFramePoses.begin(),
-        lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++, lFid++)
+        lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++, lFid++, lTf++)
     {
-        framePoses.push_back(cv::Mat::zeros(4,4,CV_32F));
         if(*lbL)
             continue;
 
@@ -981,6 +985,7 @@ void System::SaveTrajectoryBundler(const string &filename)
         if (!pKF)
             continue;
 
+        // TODO Check how to improve precision. Interpolation is not good enough
         while(pKF->isBad())
         {
             Trw = Trw*pKF->mTcp;
@@ -997,48 +1002,37 @@ void System::SaveTrajectoryBundler(const string &filename)
         f_idx << *lFid << std::endl;
         std::cout << "Final: Frame id: " << *lFid << ", KeyFrame id: " << pKF->mnFrameId << std::endl;
 
-        cv::Mat Torw = Trw*pKF->GetPose(); // keep original reference system
         Trw = Trw*pKF->GetPose()*Twb; // Tcp*Tpw*Twb0=Tcb0 where b0 is the new world reference
 
         number_frames++;
 
         cv::Mat Tcw, Tow;
         cv::Mat Rwc, Rwo;
-        cv::Mat twc, two;
+        cv::Mat tcw, two;
 
         if (mSensor == IMU_MONOCULAR || mSensor == IMU_STEREO)
         {
             Tcw = pKF->mImuCalib.Tbc*(*lit)*Trw;
             Rwc = Tcw.rowRange(0,3).colRange(0,3).t();
-            twc = -Rwc*Tcw.rowRange(0,3).col(3);
-
-            Tow = pKF->mImuCalib.Tbc*(*lit)*Torw;
-            Rwo = Tow.rowRange(0,3).colRange(0,3).t();
-            two = -Rwo*Tow.rowRange(0,3).col(3);
+            tcw = Tcw.rowRange(0,3).col(3);
         }
         else
         {
             Tcw = (*lit)*Trw;
             Rwc = Tcw.rowRange(0,3).colRange(0,3).t();
-            twc = -Rwc*Tcw.rowRange(0,3).col(3);
-
-            Tow = (*lit)*Torw;
-            Rwo = Tow.rowRange(0,3).colRange(0,3).t();
-            two = -Rwo*Tow.rowRange(0,3).col(3);
+            tcw = Tcw.rowRange(0,3).col(3);
         }
-
-        framePoses.back() = Tow;
 
         cv::Mat rot;
         cv::Rodrigues(Rwc,rot);                 // angle-axis representation
         rot.at<float>(0) = -rot.at<float>(0); // invert x
         cv::Rodrigues(rot,Rwc);                 // back to matrix
-        twc.at<float>(1) = -twc.at<float>(1); // invert y
-        twc.at<float>(2) = -twc.at<float>(2); // invert x
+        tcw.at<float>(1) = -tcw.at<float>(1); // invert y
+        tcw.at<float>(2) = -tcw.at<float>(2); // invert x
         f_tmp << setprecision(6) << Rwc.at<float>(0, 0) << " " << Rwc.at<float>(0, 1) << " " << Rwc.at<float>(0, 2) << std::endl;
         f_tmp << setprecision(6) << Rwc.at<float>(1, 0) << " " << Rwc.at<float>(1, 1) << " " << Rwc.at<float>(1, 2) << std::endl;
         f_tmp << setprecision(6) << Rwc.at<float>(2, 0) << " " << Rwc.at<float>(2, 1) << " " << Rwc.at<float>(2, 2) << std::endl;
-        f_tmp << setprecision(6) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << std::endl;
+        f_tmp << setprecision(6) << tcw.at<float>(0) << " " << tcw.at<float>(1) << " " << tcw.at<float>(2) << std::endl;
     }
 
 
@@ -1046,145 +1040,106 @@ void System::SaveTrajectoryBundler(const string &filename)
     if(vpMPs.size() != pBiggerMap->MapPointsInMap())
         throw std::runtime_error("Inconsistent number of MapPoints in Map");
 
-    if(number_frames != framePoses.size())
-        throw std::runtime_error("Inconsistent number of frames");
+    // Fill latest_mp_idx with frames
+    std::map<unsigned long int, int> latest_mp_idx;
+    for(auto fm_it = mTrackedKeyPointsMap.begin(); fm_it != mTrackedKeyPointsMap.end(); fm_it++)
+    {
+        latest_mp_idx.insert(std::make_pair(fm_it->first,0));
+    }
 
-    std::vector<int> key_idxs(number_frames, 0);
-    cv::Mat p3Dw;
+    struct Observations
+    {
+        std::vector<unsigned long int> frames_id;
+        std::vector<int> observations_idx;
+        std::vector<int> trackers_idx;
+    };
+    // Observation map
+    std::map<MapPoint*, Observations> observationMap;
     for(size_t i=0; i<vpMPs.size(); i++)
     {
         MapPoint* pMP = vpMPs[i];
-        // use first KeyFrame as reference
-        //cv::Mat p3Dw = pMP->GetWorldPos()*Twb;
-        p3Dw = pMP->GetWorldPos();
-        f_tmp_orb.str(std::string());
-
-
-        // Get map of frameId and KeyFrame
-        std::map<KeyFrame*, std::tuple<int,int>> oMP = pMP->GetObservations();
-        std::map<unsigned long int, KeyFrame*> keyFrameIdMap;
-        if(oMP.empty())
-            throw std::runtime_error("MapPoint has no observation");
-        for(auto it = oMP.begin(); it != oMP.end(); it++)
+        bool found = false;
+        for(auto fm_it = mTrackedKeyPointsMap.begin(); fm_it != mTrackedKeyPointsMap.end(); fm_it++)
         {
-            keyFrameIdMap.insert(std::pair<unsigned long int, KeyFrame*>(it->first->mnFrameId, it->first));
-        }
-
-        // Observations
-        lFid = mpTracker->mlFrameIds.begin();
-
-        int matching_observation = 0;
-        int cam_idx = 0;
-
-        for(list<cv::Mat>::iterator lit=framePoses.begin(),
-            lend=framePoses.end();lit!=lend;lit++, lFid++, cam_idx++)
-        {
-            // Pose was not set
-            if(!cv::norm((*lit), cv::Mat::zeros(4,4,CV_32F), cv::NORM_L1))
-                continue;
-
-            auto kp = pMP->isInFrustum(*lit);
-            if(kp.x == -1 || kp.y == -1)
-                continue;
-
-            auto kf_map = keyFrameIdMap.find(*lFid);
-            if( kf_map != keyFrameIdMap.end())
+            auto mp_found = std::find(fm_it->second.second.begin(), fm_it->second.second.end(), pMP);
+            auto kp_idx = latest_mp_idx[fm_it->first];
+            if(mp_found != fm_it->second.second.end())
             {
-                auto kf = kf_map->second;
-                auto kp_idx = get<0>(oMP.find(kf)->second);
-                auto kp_2 = kf->mvKeys[kp_idx].pt;
-                auto kp_3 = pMP->isInFrustum(kf->GetPose());
-                auto kp_4 = pMP->isInFrustum(kf->GetPoseInverse());
-                std::cout << "KeyFrameId: " << *lFid <<
-                    "; real pt: " << kp_2.x << ", " << kp_2.y <<
-                    "; proj pt: " << kp.x << ", " << kp.y <<
-                    "; proj 3 pt: " << kp_3.x << ", " << kp_3.y <<
-                    "; proj 4 pt: " << kp_4.x << ", " << kp_4.y << std::endl;
-                std::cout << "KF pose: " << std::endl << kf->GetPose() <<std::endl << " KF inv pose: "<< std::endl << kf->GetPoseInverse()<< std::endl << ", Comp pose: "<< std::endl << *lit << std::endl;
-                std::cout << "KF Translation: " << std::endl << kf->GetTranslation() <<std::endl << " KF cam center: "<< std::endl << kf->GetCameraCenter()<< std::endl;
+                auto mp_idx = std::distance(fm_it->second.second.begin(), mp_found);
+                auto ob_mp = observationMap.find(pMP);
+                if(ob_mp != observationMap.end())
+                {
+                    ob_mp->second.frames_id.push_back(fm_it->first);
+                    ob_mp->second.observations_idx.push_back(kp_idx);
+                    ob_mp->second.trackers_idx.push_back(mp_idx);
+                }
+                else
+                {
+                    Observations obs;
+                    obs.frames_id.push_back(fm_it->first);
+                    obs.observations_idx.push_back(kp_idx);
+                    obs.trackers_idx.push_back(mp_idx);
+                    observationMap.insert( std::make_pair(pMP, obs));
+                }
+                latest_mp_idx[fm_it->first] = kp_idx + 1;
+                found = true;
             }
 
-
-            // quadruplet
-            f_tmp_orb << " " << cam_idx  << " " << key_idxs[cam_idx] << " " << (kp.x - mImageSize.width/2) << " " << (mImageSize.height/2 - kp.y);
-
-            matching_observation++;
-            key_idxs[cam_idx] = key_idxs[cam_idx]+1;
         }
-        if(matching_observation == 0)
-            std::cout << "NO OBSERVATIONS" << std::endl;
-        else
+        if(!found)
         {
-            number_orbs++;
-
-            // TODO check reference coordinates
-            f_tmp_orbs << p3Dw.at<float>(0) << " " << -p3Dw.at<float>(1) << " " << -p3Dw.at<float>(2) << std::endl;
-            // Color 
-            f_tmp_orbs << 255 << " " << 255 << " " << 255 << std::endl;
-            f_tmp_orbs << matching_observation;
-            f_tmp_orbs << f_tmp_orb.str();
-            f_tmp_orbs << std::endl;
+            // TODO MapPoints not tracked in runtime are ignored by now
+            auto oMP = pMP->GetObservations();
+            int found = 0;
+            for(auto exp_obs = oMP.begin(); exp_obs!=oMP.end(); exp_obs++)
+            {
+                auto f = mTrackedKeyPointsMap.find(exp_obs->first->mnFrameId);
+                if(f!=mTrackedKeyPointsMap.end())
+                {
+                    //std::cout << "MP " << pMP->mnId << " was observed in KF " << exp_obs->first->mnFrameId << std::endl;
+                    found++;
+                }
+            }
+            //std::cout << "MP " << pMP->mnId << " observed in " << found << " Kfs" << std::endl;
         }
+    }
 
+    std::cout << observationMap.size() << " observations, of " << vpMPs.size() << " expected" << std::endl;
+    std::cout << mpTracker->mlFrameIds.size() << " final trackedFrames, " << mTrackedKeyPointsMap.size() << " online trackedFrames" << std::endl;
 
-//        // Observations
-//        int matching_observation = 0;
-//        for(auto it = oMP.begin(); it != oMP.end(); it++)
-//        {
-//            auto kf = it->first;
-//
-//            // Find MapPoint in KeyFrame
-//            auto mps = kf->GetMapPointMatches();
-//            auto kf_in_vec = std::find(vpKFs.begin(),vpKFs.end(),kf);
-//            if (kf_in_vec == vpKFs.end())
-//            {
-//                continue;
-//            }
-////            if(mps[get<0>(it->second)]->mnId != pMP->mnId)
-////            {
-////                std::cout << "MP not matching " << ", MP id in KF " << mps[get<0>(it->second)]->mnId  << ", MP id " << pMP->mnId << std::endl;
-////                throw std::runtime_error("MapPoint not matching in KeyFrame's MapPoints list");
-////            }
-//            matching_observation++;
-//        }
-//        f << matching_observation;
-//        for(auto it = oMP.begin(); it != oMP.end(); it++)
-//        {
-//            auto kf = it->first;
-//
-//            // Find MapPoint in KeyFrame
-//            auto mps = kf->GetMapPoints();
-//            auto kf_in_vec = std::find(vpKFs.begin(),vpKFs.end(),kf);
-//            if (kf_in_vec == vpKFs.end())
-//            {
-//                std::cout << "KF not present" << ", KF_id " << kf->mnId  << ", Frame_id " << kf->mnFrameId << std::endl;
-//                continue;
-//            }
-////            auto mp_in_vec = std::find(mps.begin(), mps.end(), pMP);
-////            if (mp_in_vec == mps.end())
-////            {
-////                std::cout << "MP not present" << ", MP_id " << pMP->mnId  << ", MP_idx " << get<0>(it->second) << std::endl;
-////                continue;
-////            }
-//
-//            auto kp_idx = get<0>(it->second); 
-//
-//            if(kp_idx >= kf->mvKeys.size())
-//            {
-//                std::cout << "KF: MP_id " << pMP->mnId << ", MPs matchs: " << kf->GetMapPointMatches().size() << ", kp: " << kf->mvKeys.size() << " Tuple: " << get<0>(it->second)<<","<<get<1>(it->second) << std::endl;
-//                throw std::runtime_error("KeyFrame has not the same amount of MapPoints and KeyPoints");
-//            }
-//
-//            auto kf_idx = std::distance(vpKFs.begin(), kf_in_vec);
-//            //auto mp_idx = std::distance(mps.begin(), mp_in_vec);
-//            auto mp_idx = kp_idx;
-//            auto kp = kf->mvKeys[kp_idx];
-//
-//            // quadruplet
-//            f << " " <<  kf_idx << " " << mp_idx << " " << (kp.pt.x - mImageSize.width/2) << " " << (mImageSize.height/2 - kp.pt.y);
-//        }
-//        f << std::endl;
-//
+    number_orbs = observationMap.size();
+    for(auto om=observationMap.begin(); om != observationMap.end(); om++)
+    {
+        auto p3Dw = om->first->GetWorldPos();
+        int idx = 0;
+        int matching_observation=0;
+        f_tmp_orb.str(std::string());
+        for(auto fr=om->second.frames_id.begin(); fr!=om->second.frames_id.end(); fr++, idx++)
+        {
+            auto frame_with_pose = mpTracker->mlFrameIds;
+            auto tracked_frame = std::find(frame_with_pose.begin(), frame_with_pose.end(), *fr);
+            if (tracked_frame != frame_with_pose.end())
+            {
+                auto cam_idx = std::distance(frame_with_pose.begin(), tracked_frame);
+                auto key_idx = om->second.observations_idx[idx];
+                auto tracker_idx = om->second.trackers_idx[idx];
+                auto kp = mTrackedKeyPointsMap[*fr].first[tracker_idx];
+
+                // quadruplet
+                f_tmp_orb << " " << cam_idx  << " " << key_idx << " "
+                    << (kp.pt.x - mImageSize.width/2) << " " << (mImageSize.height/2 - kp.pt.y);
+                matching_observation++;
+            }
+        }
+        f_tmp_orbs << p3Dw.at<float>(0) << " "
+                   << -p3Dw.at<float>(1) << " "
+                   << -p3Dw.at<float>(2) << std::endl;
+
+        // Color
+        f_tmp_orbs << 255 << " " << 255 << " " << 255 << std::endl;
+        f_tmp_orbs << matching_observation;
+        f_tmp_orbs << f_tmp_orb.str();
+        f_tmp_orbs << std::endl;
     }
 
     f << number_frames << " " << number_orbs << std::endl;

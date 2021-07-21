@@ -144,9 +144,6 @@ public:
     void AddObservation(KeyFrame* pKF,int idx);
     void EraseObservation(KeyFrame* pKF);
 
-    cv::Point2f isInFrustum(const cv::Mat &R, const cv::Mat &t, float viewingCosLimit=0.5);
-    cv::Point2f isInFrustum(const cv::Mat &T, float viewingCosLimit=0.5);
-
     std::tuple<int,int> GetIndexInKeyFrame(KeyFrame* pKF);
     bool IsInKeyFrame(KeyFrame* pKF);
 
